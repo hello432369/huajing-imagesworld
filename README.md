@@ -1,5 +1,7 @@
 # huajing-imagesworld
-画境素材管理软件
+画境
+
+素材管理软件
 
 
 插件开发文档
