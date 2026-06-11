@@ -9,4 +9,5 @@ export const api = {
   clearAllItems: () => invoke<void>("clear_all_items"),
   getThumbnailPath: (id: string) => invoke<string | null>("get_thumbnail_path", { id }),
   getItemColors: (id: string) => invoke<string[]>("get_item_colors", { id }),
+  exportItems: (destPath: string) => invoke<number>("export_items", { destPath }),
 }

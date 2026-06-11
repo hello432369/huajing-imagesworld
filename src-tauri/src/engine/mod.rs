@@ -97,8 +97,10 @@ impl Engine {
         }
     }
 
-    /// Generate thumbnail: high-quality JPEG (Q=92), max 280px, Lanczos3 resize.
-    pub fn generate_thumbnail(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
+    /// Generate thumbnail: max 280px, Lanczos3 resize.
+    /// Returns (bytes, orig_w, orig_h, extension).
+    /// PNG for images with alpha (preserves transparency), JPEG for opaque.
+    pub fn generate_thumbnail(path: &Path) -> Option<(Vec<u8>, u32, u32, &'static str)> {
         let img = image::ImageReader::open(path).ok()?.decode().ok()?;
         let (w, h) = (img.width(), img.height());
         if w == 0 || h == 0 { return None; }
@@ -110,92 +112,90 @@ impl Engine {
         };
         let thumb = img.resize_exact(tw, th, image::imageops::FilterType::Lanczos3);
         let mut buf = std::io::Cursor::new(Vec::new());
-        {
-            use image::codecs::jpeg::JpegEncoder;
+
+        if thumb.color().has_alpha() {
+            // PNG with alpha — preserves transparency
+            let rgba = thumb.to_rgba8();
+            let dyn_img = image::DynamicImage::ImageRgba8(rgba);
+            dyn_img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+            Some((buf.into_inner(), w, h, "png"))
+        } else {
+            // JPEG — smaller for opaque images
             let rgb = thumb.to_rgb8();
+            use image::codecs::jpeg::JpegEncoder;
             let mut encoder = JpegEncoder::new_with_quality(&mut buf, 92);
             encoder.encode(rgb.as_raw(), tw, th, image::ColorType::Rgb8.into()).ok()?;
+            Some((buf.into_inner(), w, h, "jpg"))
         }
-        Some((buf.into_inner(), w, h))
     }
 
-    /// Extract dominant colors (max 9). Uses 6-bit quantization + weighted sampling.
+    /// Extract dominant colors (max 9). Uses 5-bit quantization for bucketing,
+    /// then computes the average actual pixel value per bucket. Skips GIFs.
     pub fn extract_colors(path: &Path, max_colors: usize) -> Vec<String> {
+        if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("gif")).unwrap_or(false) {
+            return vec![];
+        }
         let img = match image::ImageReader::open(path).ok().and_then(|r| r.decode().ok()) {
             Some(i) => i,
             None => return vec![],
         };
-        let small = img.resize_exact(64, 64, image::imageops::FilterType::Lanczos3);
+        let small = img.thumbnail(64, 64);
         let rgb = small.to_rgb8();
 
-        let mut buckets: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        let total_pixels = (rgb.width() * rgb.height()) as f64;
+        let mut buckets: std::collections::HashMap<u32, (u64, u64, u64, u64)> =
+            std::collections::HashMap::new();
         for pixel in rgb.pixels() {
-            let key = ((pixel[0] as u32 >> 2) << 12)
-                | ((pixel[1] as u32 >> 2) << 6)
-                | (pixel[2] as u32 >> 2);
-            *buckets.entry(key).or_insert(0) += 1;
+            let r = pixel[0] as u64;
+            let g = pixel[1] as u64;
+            let b = pixel[2] as u64;
+            let key = ((r as u32 >> 3) << 10) | ((g as u32 >> 3) << 5) | (b as u32 >> 3);
+            let e = buckets.entry(key).or_insert((0, 0, 0, 0));
+            e.0 += r;
+            e.1 += g;
+            e.2 += b;
+            e.3 += 1;
         }
 
-        let mut scored: Vec<(u32, f64)> = buckets
+        let mut scored: Vec<(u8, u8, u8, u64)> = buckets
             .into_iter()
-            .map(|(key, count)| {
-                let r = ((key >> 12) & 0x3F) << 2 | 0x3;
-                let g = ((key >> 6) & 0x3F) << 2 | 0x3;
-                let b = (key & 0x3F) << 2 | 0x3;
-                let lum = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
-                let freq_weight = count as f64 / total_pixels;
-                let score = freq_weight * (0.3 + 0.7 * (lum / 255.0));
-                (key, score)
+            .map(|(_, (sr, sg, sb, count))| {
+                let r = (sr / count) as u8;
+                let g = (sg / count) as u8;
+                let b = (sb / count) as u8;
+                (r, g, b, count)
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.3.cmp(&a.3));
 
         let mut result: Vec<String> = Vec::new();
-        let mut used_colors: Vec<(u8, u8, u8)> = Vec::new();
-        let min_distance: f64 = 800.0;
+        let min_distance_sq: i32 = 800;
 
-        for (key, _score) in &scored {
-            if result.len() >= max_colors { break; }
-            let r = (((key >> 12) & 0x3F) << 2 | 0x3) as u8;
-            let g = (((key >> 6) & 0x3F) << 2 | 0x3) as u8;
-            let b = ((key & 0x3F) << 2 | 0x3) as u8;
-            if r < 15 && g < 15 && b < 15 { continue; }
-            if r > 240 && g > 240 && b > 240 { continue; }
-            let too_close = used_colors.iter().any(|(ur, ug, ub)| {
-                let dr = *ur as i32 - r as i32;
-                let dg = *ug as i32 - g as i32;
-                let db = *ub as i32 - b as i32;
-                ((dr * dr * 3 + dg * dg * 2 + db * db * 3) as f64) < min_distance
-            });
-            if too_close { continue; }
-            let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
-            used_colors.push((r, g, b));
-            result.push(hex);
-        }
-
-        // Relaxed pass if < 3 colors
-        if result.len() < 3 && result.len() < max_colors {
-            let relaxed: f64 = 300.0;
-            for (key, _score) in &scored {
-                if result.len() >= max_colors { break; }
-                let r = (((key >> 12) & 0x3F) << 2 | 0x3) as u8;
-                let g = (((key >> 6) & 0x3F) << 2 | 0x3) as u8;
-                let b = ((key & 0x3F) << 2 | 0x3) as u8;
-                if r < 15 && g < 15 && b < 15 { continue; }
-                if used_colors.iter().any(|(ur, ug, ub)| ur == &r && ug == &g && ub == &b) { continue; }
-                let too_close = used_colors.iter().any(|(ur, ug, ub)| {
-                    let dr = *ur as i32 - r as i32;
-                    let dg = *ug as i32 - g as i32;
-                    let db = *ub as i32 - b as i32;
-                    ((dr * dr * 3 + dg * dg * 2 + db * db * 3) as f64) < relaxed
-                });
-                if too_close { continue; }
-                let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
-                used_colors.push((r, g, b));
-                result.push(hex);
+        for &(r, g, b, _count) in &scored {
+            if result.len() >= max_colors {
+                break;
             }
+            if r < 4 && g < 4 && b < 4 {
+                continue;
+            }
+            if r > 251 && g > 251 && b > 251 {
+                continue;
+            }
+
+            let too_close = result.iter().any(|hex| {
+                let er = i32::from_str_radix(&hex[1..3], 16).unwrap_or(0);
+                let eg = i32::from_str_radix(&hex[3..5], 16).unwrap_or(0);
+                let eb = i32::from_str_radix(&hex[5..7], 16).unwrap_or(0);
+                let dr = er - r as i32;
+                let dg = eg - g as i32;
+                let db = eb - b as i32;
+                dr * dr + dg * dg + db * db < min_distance_sq
+            });
+            if too_close {
+                continue;
+            }
+
+            result.push(format!("#{:02X}{:02X}{:02X}", r, g, b));
         }
 
         result

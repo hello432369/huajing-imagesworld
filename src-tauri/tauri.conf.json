@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/crates/tauri-config-schema/schema.json",
-  "productName": "画境",
+  "productName": "huajing",
   "version": "0.1.0",
   "identifier": "com.huajing.desktop",
   "build": {
@@ -40,7 +40,6 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "entitlements": "entitlements.plist",
       "minimumSystemVersion": "10.15"
     }
   }

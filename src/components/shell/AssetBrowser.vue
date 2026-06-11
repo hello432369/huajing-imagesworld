@@ -11,6 +11,11 @@ const toast = useToastStore()
 const dragOver = ref(false)
 const previewItem = ref<Item | null>(null)
 const zoomLevel = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const isPanning = ref(false)
+const panStartX = ref(0)
+const panStartY = ref(0)
 const savedScrollTop = ref(0)
 const containerRef = ref<HTMLDivElement | null>(null)
 const sentinelEl = ref<HTMLDivElement | null>(null)
@@ -18,6 +23,9 @@ const appWebview = getCurrentWebviewWindow()
 const thumbReady = ref<Map<string, string>>(new Map())
 const loadingThumbs = ref<Set<string>>(new Set())
 const pkMode = ref(false)
+const gifVisible = ref<Map<string, boolean>>(new Map())
+const gifSrcs = ref<Map<string, string>>(new Map())
+let gifObserver: IntersectionObserver | null = null
 
 const previewIndex = computed(() => {
   if (!previewItem.value) return -1
@@ -41,6 +49,8 @@ onMounted(async () => {
   await itemStore.fetchItems({})
   await nextTick()
   setupObserver()
+  computeGifSrcs()
+  setupGifObserver()
 
   const unlisten = await appWebview.onDragDropEvent(async (event) => {
     const e = event.payload
@@ -55,6 +65,7 @@ onMounted(async () => {
   })
   onBeforeUnmount(() => {
     if (observer) { observer.disconnect(); observer = null }
+    if (gifObserver) { gifObserver.disconnect(); gifObserver = null }
     unlisten()
   })
 })
@@ -71,9 +82,43 @@ function setupObserver() {
   observer.observe(sentinelEl.value)
 }
 
+function setupGifObserver() {
+  if (gifObserver) gifObserver.disconnect()
+  gifObserver = new IntersectionObserver((entries) => {
+    let changed = false
+    const next = new Map(gifVisible.value)
+    for (const entry of entries) {
+      const id = (entry.target as HTMLElement).dataset.id
+      if (id) {
+        const was = next.get(id) ?? false
+        const now = entry.isIntersecting
+        if (was !== now) { next.set(id, now); changed = true }
+      }
+    }
+    if (changed) gifVisible.value = next
+  }, { rootMargin: "200px" })
+  const container = containerRef.value
+  if (container) {
+    container.querySelectorAll('.grid-item[data-is-gif]')
+      .forEach(el => gifObserver?.observe(el))
+  }
+}
+
+function computeGifSrcs() {
+  for (const item of itemStore.items) {
+    if (item.mime_type === 'image/gif' && !gifSrcs.value.has(item.id)) {
+      const next = new Map(gifSrcs.value)
+      next.set(item.id, convertFileSrc(item.file_path))
+      gifSrcs.value = next
+    }
+  }
+}
+
 watch(() => itemStore.items.length, async () => {
   await nextTick()
   setupObserver()
+  computeGifSrcs()
+  setupGifObserver()
   loadVisibleThumbs()
 })
 
@@ -163,9 +208,11 @@ async function closePreview() {
   const saved = savedScrollTop.value
   previewItem.value = null
   zoomLevel.value = 1
+  panX.value = 0
+  panY.value = 0
+  isPanning.value = false
   savedScrollTop.value = 0
   await nextTick()
-  // Restore scroll position after Vue re-renders
   if (containerRef.value && saved > 0) {
     containerRef.value.scrollTop = saved
   }
@@ -213,6 +260,22 @@ function onPreviewWheel(e: WheelEvent) {
   e.preventDefault()
 }
 
+// Pan with mouse drag (when zoomed in)
+function onPreviewMouseDown(e: MouseEvent) {
+  if (zoomLevel.value <= 1) return
+  isPanning.value = true
+  panStartX.value = e.clientX - panX.value
+  panStartY.value = e.clientY - panY.value
+}
+function onPreviewMouseMove(e: MouseEvent) {
+  if (!isPanning.value) return
+  panX.value = e.clientX - panStartX.value
+  panY.value = e.clientY - panStartY.value
+}
+function onPreviewMouseUp() {
+  isPanning.value = false
+}
+
 // PK mode
 function pkCurrentLoses() {
   const current = previewItem.value
@@ -241,20 +304,6 @@ function pkNextLoses() {
       <div v-if="showIdleTip && itemStore.items.length > 0" class="idle-tip">👆 双击图片预览大图</div>
     </Transition>
 
-    <!-- Import bar (non-blocking) -->
-    <div class="import-bar" v-if="itemStore.importing">
-      <div class="import-bar-inner">
-        <div class="import-bar-text">📥 {{ itemStore.importDone }} / {{ itemStore.importTotal }} 张</div>
-        <div class="import-bar-track">
-          <div class="import-bar-fill" :style="{ width: itemStore.importTotal > 0 ? (itemStore.importDone / itemStore.importTotal * 100) + '%' : '0%' }"></div>
-        </div>
-        <div class="import-bar-extra">
-          <span v-if="itemStore.importSkipped > 0">跳过 {{ itemStore.importSkipped }} 个</span>
-          <button class="import-bar-cancel" @click="itemStore.cancelImport()">取消</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Drop overlay -->
     <div class="drop-overlay" v-if="dragOver">
       <svg viewBox="0 0 48 48" fill="none" width="36" height="36">
@@ -282,8 +331,12 @@ function pkNextLoses() {
         </button>
       </div>
 
-      <div v-if="!pkMode" class="preview-body">
-        <img :src="convertFileSrc(previewItem.file_path)" :alt="previewItem.file_name" class="preview-image" :style="{ transform: 'scale(' + zoomLevel + ')' }" />
+      <div v-if="!pkMode" class="preview-body"
+        @mousedown="onPreviewMouseDown"
+        @mousemove="onPreviewMouseMove"
+        @mouseup="onPreviewMouseUp"
+        @mouseleave="onPreviewMouseUp">
+        <img :src="convertFileSrc(previewItem.file_path)" :alt="previewItem.file_name" class="preview-image" :class="{ panning: isPanning }" :style="{ transform: 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoomLevel + ')' }" />
       </div>
 
       <div v-else class="pk-body">
@@ -325,12 +378,13 @@ function pkNextLoses() {
             class="grid-item"
             :class="{ current: item.id === itemStore.currentId }"
             :data-id="item.id"
+            :data-is-gif="item.mime_type === 'image/gif' ? '' : undefined"
             @click="handleItemClick(item)"
             @dblclick="handleItemDblClick(item)">
             <div class="thumb-wrap">
               <img
                 v-if="thumbReady.has(item.id)"
-                :src="thumbReady.get(item.id)"
+                :src="item.mime_type === 'image/gif' && gifSrcs.get(item.id) ? (gifVisible.get(item.id) ? gifSrcs.get(item.id) : thumbReady.get(item.id)) : thumbReady.get(item.id)"
                 :alt="item.file_name"
                 loading="lazy"
                 draggable="false"
@@ -367,15 +421,6 @@ function pkNextLoses() {
 
 .drop-overlay { position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; background:rgba(91,155,213,0.08); backdrop-filter:blur(4px); color:var(--accent); font-size:15px; pointer-events:none; }
 
-.import-bar { position:absolute; bottom:0; left:0; right:0; z-index:99; padding:8px 12px; background:rgba(13,13,13,0.92); backdrop-filter:blur(8px); border-top:1px solid var(--border); pointer-events:auto; }
-.import-bar-inner { display:flex; align-items:center; gap:10px; }
-.import-bar-text { font-size:12px; font-weight:600; color:var(--text-primary); white-space:nowrap; flex-shrink:0; }
-.import-bar-track { flex:1; height:4px; background:var(--bg-hover); border-radius:2px; overflow:hidden; min-width:60px; }
-.import-bar-fill { height:100%; background:var(--accent); border-radius:2px; transition:width 0.2s; }
-.import-bar-extra { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-muted); flex-shrink:0; }
-.import-bar-cancel { padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; border:1px solid var(--border); background:var(--bg-hover); color:var(--text-secondary); transition:all 0.1s; }
-.import-bar-cancel:hover { background:rgba(212,90,90,0.15); border-color:rgba(212,90,90,0.3); color:#f0a0a0; }
-
 .grid-container { flex:1; overflow-y:auto; padding:12px; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:8px; }
 .grid-item { aspect-ratio:1; content-visibility:auto; contain-intrinsic-size:140px; cursor:pointer; position:relative; border-radius:4px; overflow:hidden; transition:box-shadow 0.15s; }
@@ -406,7 +451,8 @@ function pkNextLoses() {
 .preview-close { display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:6px; background:transparent; border:none; color:#aaa; cursor:pointer; transition:all .12s; flex-shrink:0; margin-left:auto; }
 .preview-close:hover { background:rgba(255,255,255,0.1); color:#fff; }
 .preview-body { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; background:var(--bg-deepest); }
-.preview-image { max-width:100%; max-height:100%; object-fit:contain; border-radius:4px; transition:transform 0.08s ease-out; image-rendering:pixelated; image-rendering:-moz-crisp-edges; image-rendering:crisp-edges; }
+.preview-image { max-width:100%; max-height:100%; object-fit:contain; border-radius:4px; transition:transform 0.08s ease-out; image-rendering:pixelated; image-rendering:-moz-crisp-edges; image-rendering:crisp-edges; cursor:grab; }
+.preview-image.panning { cursor:grabbing; transition:none; }
 .preview-actions { display:flex; justify-content:center; gap:8px; padding:10px; background:var(--bg-surface); border-top:1px solid var(--border); flex-shrink:0; }
 
 .action-sep { width:1px; height:20px; background:var(--border); flex-shrink:0; }

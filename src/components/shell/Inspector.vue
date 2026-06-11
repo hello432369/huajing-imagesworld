@@ -92,7 +92,6 @@ function formatSize(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB"
 }
 
-// ── Color space conversions ──
 function rgbToHex(r: number, g: number, b: number): string {
   return "#" + [r, g, b].map(c => c.toString(16).padStart(2, "0")).join("")
 }
@@ -153,12 +152,10 @@ function rgbToCmyk(r: number, g: number, b: number): string {
   const y = ((1 - bb - k) / (1 - k)) * 100
   return `cmyk(${c.toFixed(0)}%, ${m.toFixed(0)}%, ${y.toFixed(0)}%, ${(k * 100).toFixed(0)}%)`
 }
-
 </script>
 
 <template>
   <aside class="inspector">
-    <!-- Traffic lights + title at top -->
     <div class="inspector-top" data-tauri-drag-region>
       <div class="traffic-lights" style="-webkit-app-region: no-drag; app-region: no-drag;">
         <button class="traffic-dot close" @click="appWindow.close()" title="关闭" style="-webkit-app-region: no-drag; app-region: no-drag;" />
@@ -169,7 +166,6 @@ function rgbToCmyk(r: number, g: number, b: number): string {
     </div>
 
     <div class="inspector-body" v-if="item">
-      <!-- Colors -->
       <div class="section">
         <div class="section-label">色彩提取</div>
         <div class="loading-text" v-if="extracting">🎨 提取中...</div>
@@ -196,7 +192,6 @@ function rgbToCmyk(r: number, g: number, b: number): string {
         <div class="loading-text" v-else-if="!extracting">点击图片自动提取</div>
       </div>
 
-      <!-- Metadata -->
       <div class="section">
         <div class="section-label">文件信息</div>
         <div class="meta-grid">
@@ -233,8 +228,7 @@ function rgbToCmyk(r: number, g: number, b: number): string {
     </div>
 
     <div class="inspector-empty" v-else />
-    
-    <!-- Help / Supported formats -->
+
     <div class="inspector-footer">
       <button class="help-btn" @click="showFormats = !showFormats" title="支持的格式">
         <svg viewBox="0 0 20 20" fill="none" width="16" height="16">
@@ -245,7 +239,6 @@ function rgbToCmyk(r: number, g: number, b: number): string {
       </button>
     </div>
 
-    <!-- Format info panel -->
     <Transition name="popup">
       <div v-if="showFormats" class="format-popup">
         <div class="format-header">

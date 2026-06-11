@@ -26,17 +26,30 @@ fn get_app_dir(app: &tauri::App) -> PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    eprintln!("[画境 v2] run() started");
+
+    // Panic hook — any Rust panic writes to stderr so terminal shows the crash
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("\n========== 🚨 PANIC ==========");
+        eprintln!("{:#?}", info);
+        eprintln!("==============================\n");
+    }));
+
+    // Enable tracing output (shows on stderr when running from terminal)
+    tracing_subscriber::fmt::init();
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_dir = get_app_dir(app);
             let thumb_dir = app_dir.join("thumbs");
             std::fs::create_dir_all(&app_dir)?;
             std::fs::create_dir_all(&thumb_dir)?;
             let db = db::MetadataDb::new(app_dir.join("metadata.db"))?;
-            
+
             let max_id = db.scan_prefix_max_numeric("item:").unwrap_or(0);
             let next_id = AtomicU64::new(max_id + 1);
-            
+
             app.manage(Arc::new(AppState {
                 db: Arc::new(db),
                 cancelled: Arc::new(AtomicBool::new(false)),
@@ -53,6 +66,7 @@ pub fn run() {
             api::items_cmds::clear_all_items,
             api::items_cmds::get_thumbnail_path,
             api::items_cmds::get_item_colors,
+            api::items_cmds::export_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

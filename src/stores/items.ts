@@ -22,7 +22,7 @@ export const useItemStore = defineStore("items", () => {
   const currentQuery = ref<ItemQuery>({})
   let unlistenImport: UnlistenFn | null = null
   let importFinalized = false
-  let importItemIds = new Set<string>() // track IDs to avoid duplicates
+  let importItemIds = new Set<string>()
   let thumbLoadTimer: ReturnType<typeof setTimeout> | null = null
 
   const current = computed(() =>
@@ -88,10 +88,8 @@ export const useItemStore = defineStore("items", () => {
         return
       }
 
-      // Deduplicate finalization
       if (batch.length === 0 && importFinalized) return
 
-      // Done signal: batch is empty, index >= total
       if (batch.length === 0 && index >= evTotal) {
         importFinalized = true
         const success = index
@@ -99,12 +97,10 @@ export const useItemStore = defineStore("items", () => {
         importTotal.value = success
         importFailed.value = evTotal >= success ? evTotal - success : 0
         importSkipped.value = skipped
-        // Set total to actual count of items we received
         total.value = items.value.length
         cleanupImport()
         if (success > 0) {
           useToastStore().show("create", `🎉 ${success} 张新伙伴加入大家庭！`)
-          // Load thumbs for items that arrived toward the end
           const ids = items.value.slice(-20).map(i => i.id).filter(id => !thumbSrcMap.has(id))
           if (ids.length > 0) loadThumbsForIds(ids)
         }
@@ -114,7 +110,6 @@ export const useItemStore = defineStore("items", () => {
         return
       }
 
-      // Regular progress: add new items to display immediately
       if (batch.length > 0) {
         const newItems = batch.filter(item => !importItemIds.has(item.id))
         for (const item of newItems) {
@@ -181,9 +176,13 @@ export const useItemStore = defineStore("items", () => {
   const colorCache = new Map<string, string[]>()
 
   async function getColors(id: string): Promise<string[]> {
-    if (colorCache.has(id)) return colorCache.get(id)!
+    // Don't cache empty — Phase 2 might generate colors later
+    if (colorCache.has(id)) {
+      const cached = colorCache.get(id)!
+      if (cached.length > 0) return cached
+    }
     const colors = await api.getItemColors(id)
-    colorCache.set(id, colors)
+    if (colors.length > 0) colorCache.set(id, colors)
     return colors
   }
 

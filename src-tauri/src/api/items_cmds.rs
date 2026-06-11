@@ -94,7 +94,9 @@ pub async fn import_files(
                 return;
             }
             let result = SdkBridge::import_single_file_fast(&state_for_thread, path_str.clone());
-            let guard = tx.lock().unwrap();
+            // Use unwrap_or_else to recover from poisoned mutex
+            // (if another worker panicked, we don't want cascading crash)
+            let guard = tx.lock().unwrap_or_else(|e| e.into_inner());
             let _ = guard.send(result.ok());
         });
 
@@ -105,6 +107,7 @@ pub async fn import_files(
 
     // ── 3. Collector: non-blocking recv with 100ms timeout ──
     let cancelled_clone2 = cancelled.clone();
+    let state_for_thumb = state.inner().clone();
     tauri::async_runtime::spawn(async move {
         let mut batch: Vec<Item> = Vec::new();
         let mut done: usize = 0;
@@ -160,6 +163,43 @@ pub async fn import_files(
         app.emit("import-progress", ImportProgress {
             items: vec![], index: successes, total: successes, skipped: skipped_count, cancelled: false,
         }).ok();
+
+        // Silently generate missing thumbnails + colors in background (no progress events)
+        let bg_state = state_for_thumb;
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut need_work: Vec<String> = Vec::new();
+            for result in bg_state.db.scan_prefix("item:") {
+                if let Ok((_, value)) = result {
+                    if let Ok(item) = serde_json::from_slice::<crate::models::Item>(&value) {
+                        let id = item.id;
+                        let thumb_path = bg_state.thumb_dir.join(format!("{}.jpg", &id));
+                        if !thumb_path.exists() {
+                            need_work.push(id);
+                        }
+                    }
+                }
+            }
+            if need_work.is_empty() { return; }
+            use rayon::prelude::*;
+            need_work.par_iter().for_each(|id| {
+                let item_key = format!("item:{}", id);
+                if let Ok(Some(data)) = bg_state.db.get(&item_key) {
+                    if let Ok(item) = serde_json::from_slice::<crate::models::Item>(&data) {
+                        let src = std::path::Path::new(&item.file_path);
+                        if !src.exists() { return; }
+                        if let Some((thumb_bytes, _, _, ext)) = crate::engine::Engine::generate_thumbnail(src) {
+                            let _ = std::fs::write(&bg_state.thumb_dir.join(format!("{}.{}", id, ext)), &thumb_bytes);
+                        }
+                        let colors = crate::engine::Engine::extract_colors(src, 9);
+                        if !colors.is_empty() {
+                            if let Ok(json) = serde_json::to_string(&colors) {
+                                let _ = bg_state.db.put(&format!("colors:{}", id), json.as_bytes());
+                            }
+                        }
+                    }
+                }
+            });
+        });
     });
 
     Ok(())
@@ -184,6 +224,20 @@ pub async fn clear_all_items(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     SdkBridge::clear_all_items(&*state).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_items(
+    state: State<'_, Arc<AppState>>,
+    dest_path: String,
+) -> Result<usize, String> {
+    let dest = std::path::Path::new(&dest_path);
+    if !dest.is_dir() {
+        std::fs::create_dir_all(dest).map_err(|e| format!("无法创建目录: {}", e))?;
+    }
+    SdkBridge::export_all_items(&*state, dest)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

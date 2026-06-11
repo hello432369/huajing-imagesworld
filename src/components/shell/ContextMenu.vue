@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from "vue"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { useItemStore } from "../../stores/items"
 import { useToastStore } from "../../stores/toast"
+import { api } from "../../services/api"
 
 const itemStore = useItemStore()
 const toast = useToastStore()
@@ -10,6 +12,7 @@ const visible = ref(false)
 const x = ref(0)
 const y = ref(0)
 const showConfirm = ref(false)
+const exporting = ref(false)
 
 function open(event: MouseEvent) {
   x.value = event.clientX
@@ -34,12 +37,37 @@ async function handleConfirm() {
     toast.show("delete", "好嘞～全部清空，干干净净！")
   } catch (e) {
     console.error("clearAll error:", e)
+    toast.show("update", "😵 清空失败: " + e)
   }
   close()
 }
 
 function handleCancel() {
   close()
+}
+
+async function handleExport() {
+  visible.value = false
+  exporting.value = true
+
+  try {
+    const dir = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "选择导出文件夹",
+    })
+    if (!dir) {
+      exporting.value = false
+      return // user cancelled
+    }
+
+    const count = await api.exportItems(dir)
+    toast.show("create", `📦 已移动 ${count} 张图片到目标文件夹！`)
+    exporting.value = false
+  } catch (e: any) {
+    toast.show("update", `😵 导出出错了: ${e}`)
+    exporting.value = false
+  }
 }
 
 function onGlobalClick() {
@@ -56,6 +84,11 @@ defineExpose({ open, close })
   <Teleport to="body">
     <Transition name="menu">
       <div v-if="visible && !showConfirm" class="ctx-menu" :style="{ left: x + 'px', top: y + 'px' }">
+        <div class="ctx-item" @click="handleExport">
+          <span class="ctx-icon">📁</span>
+          <span>导出全部到文件夹</span>
+        </div>
+        <div class="ctx-sep"></div>
         <div class="ctx-item danger" @click="handleClearAll">
           <span class="ctx-icon">🗑️</span>
           <span>清空全部图片</span>
@@ -71,6 +104,15 @@ defineExpose({ open, close })
             <button class="confirm-btn cancel" @click.stop="handleCancel">取消</button>
             <button class="confirm-btn ok" @click.stop="handleConfirm">确定清空</button>
           </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="confirm">
+      <div v-if="exporting" class="confirm-overlay">
+        <div class="export-dialog">
+          <div class="export-spinner"></div>
+          <div class="export-text">正在移动文件…</div>
         </div>
       </div>
     </Transition>
@@ -105,6 +147,7 @@ defineExpose({ open, close })
 .ctx-item.danger { color: #f0a0a0; }
 .ctx-item.danger:hover { background: rgba(212,90,90,0.15); }
 .ctx-icon { font-size: 15px; line-height: 1; }
+.ctx-sep { height: 1px; background: var(--border, #252525); margin: 4px 8px; }
 
 .menu-enter-active { animation: menuIn 0.12s ease-out; }
 .menu-leave-active { animation: menuOut 0.1s ease-in; }
@@ -192,5 +235,35 @@ defineExpose({ open, close })
 @keyframes confirmOut {
   from { opacity: 1; transform: scale(1); }
   to { opacity: 0; transform: scale(0.7); }
+}
+
+.export-dialog {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  background: rgba(28,28,28,0.95);
+  border: 1px solid var(--border, #252525);
+  border-radius: 24px;
+  padding: 40px 48px;
+  box-shadow: 0 16px 64px rgba(0,0,0,0.5);
+}
+
+.export-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.export-text {
+  font-size: 14px;
+  color: var(--text-secondary);
 }
 </style>

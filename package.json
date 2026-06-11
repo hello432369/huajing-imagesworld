@@ -1,12 +1,13 @@
 {
-  "name": "画境",
+  "name": "huajing",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:bundle": "tauri build && plutil -replace CFBundleDisplayName -string '画境' 'src-tauri/target/release/bundle/macos/huajing.app/Contents/Info.plist' && plutil -replace CFBundleName -string '画境' 'src-tauri/target/release/bundle/macos/huajing.app/Contents/Info.plist'"
   },
   "dependencies": {
     "pinia": "^2.2.0",

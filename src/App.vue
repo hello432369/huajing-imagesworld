@@ -36,7 +36,6 @@ import AppShell from "./components/shell/AppShell.vue"
   --scrollbar-track: transparent;
   --sidebar-width: 220px;
   --inspector-width: 280px;
-  --titlebar-height: 38px;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
     Roboto, "Noto Sans SC", "Helvetica Neue", sans-serif;
   font-size: 13px;
